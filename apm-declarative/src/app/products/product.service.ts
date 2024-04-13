@@ -1,6 +1,6 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { Observable, catchError, map, of, switchMap, tap, throwError } from 'rxjs';
+import { BehaviorSubject, Observable, catchError, combineLatest, filter, map, of, shareReplay, switchMap, tap, throwError } from 'rxjs';
 import { Product } from './product';
 import { ProductData } from './product-data';
 import { HttpErrorService } from '../utilities/http-error.service';
@@ -22,42 +22,52 @@ export class ProductService {
   private httpErrorService = inject(HttpErrorService)
   private reviewService = inject(ReviewService)
 
-  getProducts(): Observable<Product[]> {
-    return this.http.get<Product[]>(this.productsUrl).pipe(
-      tap(res => console.log(res, 'In http.get pipeline')),
-      catchError(err => {
-        console.error(err);
-        return this.handleError(err)
-      })
-    )
-  }
+  private productSelectedSubject = new BehaviorSubject<number | undefined>(undefined);
+  readonly productSelected$ = this.productSelectedSubject.asObservable();
 
   readonly products$ = this.http.get<Product[]>(this.productsUrl).pipe(
     tap(res => console.log(res, 'In http.get pipeline')),
+    shareReplay(1),//operators after share replay run everytime
+    tap(() => console.log('shareReplay')),
     catchError(err => {
       console.error(err);
       return this.handleError(err)
     })
   )
 
-
-
-
   //Any Observable that emits an observable is call a Higher-order observable
   //When you want to modify an the result from an htpp request by/with the result from another http request use Higher Order Mapping Operators
   //This will subscribe/unsubscribe as well as unwrap the result (not returning an observable but actual result)
 
-
-  getProduct(id: number): Observable<Product> {
-    const productUrl = this.productsUrl + '/' + id;
-    return this.http.get<Product>(productUrl).pipe(
-      tap(() => console.log('In http.get single product pipeline')),
-      switchMap(product => this.getProductWithReview(product)),//transformation operator!!! just like map, concatMap, mergeMap
-      catchError(err => {
-        return this.handleError(err)
-      })
-    )
+  productSelected(selectedProductId: number): void {
+    this.productSelectedSubject.next(selectedProductId);
   }
+
+  readonly product1$ = this.productSelected$.pipe(
+    filter(Boolean),//Boolean checks for underfined or null and returns false if so
+    switchMap(productSelected => {
+      const productUrl = this.productsUrl + '/' + productSelected;
+      return this.http.get<Product>(productUrl).pipe(
+        tap(() => console.log('In http.get single product pipeline')),
+        switchMap(product => this.getProductWithReview(product)),//transformation operator!!! just like map, concatMap, mergeMap
+        catchError(err => {
+          return this.handleError(err)
+        })
+      )
+    })
+  )
+
+  readonly product2$ = combineLatest([this.productSelected$, this.products$]).pipe(
+    tap(x => x),
+    map(([selectedProductId, products]) => //only emits after both observable have been emit at least one value
+    //after that will emit again if one of the observables value changes
+    //but only update the the changed observable and keeps that last emitted value from the other
+      products.find(product => product.id === selectedProductId)
+    ),
+    filter(Boolean),
+    switchMap(product => this.getProductWithReview(product)),
+    catchError(err => this.handleError(err))
+  )
 
   private getProductWithReview(product: Product): Observable<Product> {
     if (product.hasReviews) {
